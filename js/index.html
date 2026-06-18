@@ -1,0 +1,996 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PDF 阅读与重命名工具</title>
+    <!-- 引入 Tailwind CSS v4 -->
+    <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+    <!-- 引入 PDF.js -->
+    <script src="https://cdn.jsdelivr.net/npm/pdfjs-dist@latest/build/pdf.min.js"></script>
+    <!-- 引入 Font Awesome -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+    
+    <style>
+        /* 自定义滚动条样式 */
+        ::-webkit-scrollbar {
+            width: 8px;
+            height: 8px;
+        }
+        ::-webkit-scrollbar-track {
+            background: rgba(15, 23, 42, 0.4);
+            border-radius: 4px;
+        }
+        ::-webkit-scrollbar-thumb {
+            background: rgba(148, 163, 184, 0.4);
+            border-radius: 4px;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: rgba(148, 163, 184, 0.7);
+        }
+        
+        /* 左侧栏折叠按钮样式 */
+        .sidebar-toggle-left {
+            position: absolute;
+            right: -12px;
+            top: 50%;
+            transform: translateY(-50%);
+            width: 24px;
+            height: 48px;
+            background: #1e293b;
+            border: 1px solid #475569;
+            border-radius: 0 4px 4px 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            z-index: 100;
+            transition: all 0.3s ease;
+            box-shadow: 2px 0 8px rgba(0, 0, 0, 0.3);
+        }
+        .sidebar-toggle-left:hover {
+            background: #334155;
+            border-color: #6366f1;
+        }
+        
+        /* 右侧栏折叠按钮样式 */
+        .sidebar-toggle-right {
+            position: absolute;
+            left: -12px;
+            top: 50%;
+            transform: translateY(-50%);
+            width: 24px;
+            height: 48px;
+            background: #1e293b;
+            border: 1px solid #475569;
+            border-radius: 4px 0 0 4px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            z-index: 100;
+            transition: all 0.3s ease;
+            box-shadow: -2px 0 8px rgba(0, 0, 0, 0.3);
+        }
+        .sidebar-toggle-right:hover {
+            background: #334155;
+            border-color: #6366f1;
+        }
+        
+        /* 侧边栏折叠状态 */
+        .sidebar-left.collapsed {
+            transform: translateX(-100%);
+            margin-left: -24px;
+        }
+        .sidebar-right.collapsed {
+            transform: translateX(100%);
+            margin-right: -24px;
+        }
+        
+        /* 折叠状态下的toggle按钮 - 默认隐藏，由JS动态控制 */
+        .sidebar-left.collapsed .sidebar-toggle-left,
+        .sidebar-right.collapsed .sidebar-toggle-right {
+            display: none;
+        }
+        
+        /* 浮动toggle按钮样式（JS动态创建） */
+        .floating-toggle-button {
+            position: fixed;
+            z-index: 1000;
+            background: #1e293b;
+            border: 2px solid #475569;
+            width: 28px;
+            height: 56px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+            transition: all 0.3s ease;
+        }
+        .floating-toggle-button:hover {
+            background: #334155;
+            border-color: #6366f1;
+        }
+        
+        /* PDF Canvas 容器样式 */
+        .pdf-container {
+            position: relative;
+            overflow: hidden;
+        }
+        
+        /* 高亮叠加层 */
+        .highlight-overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            pointer-events: none;
+        }
+        
+        /* 文件列表项样式 */
+        .file-item {
+            transition: all 0.2s ease;
+        }
+        .file-item:hover {
+            background: rgba(99, 102, 241, 0.2);
+        }
+        .file-item.active {
+            background: rgba(99, 102, 241, 0.3);
+            border-left: 3px solid #6366f1;
+        }
+        
+        /* Tab 按钮样式 */
+        .tab-btn {
+            transition: all 0.2s ease;
+        }
+        .tab-btn.active {
+            background: rgba(99, 102, 241, 0.3);
+            border-bottom: 2px solid #6366f1;
+        }
+        
+        /* 快捷键按钮样式 */
+        .rename-btn {
+            transition: all 0.2s ease;
+        }
+        .rename-btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+        }
+    </style>
+</head>
+<body class="bg-slate-900 text-white min-h-screen overflow-x-hidden">
+    <div id="app" class="flex flex-col h-screen">
+        <!-- 顶部工具栏 -->
+        <header class="bg-slate-800 border-b border-slate-700 px-4 py-2 flex items-center justify-between z-20">
+            <div class="flex items-center space-x-4">
+                <h1 class="text-xl font-bold text-indigo-400">
+                    <i class="fas fa-file-pdf mr-2"></i>PDF 工具
+                </h1>
+                <div class="h-6 w-px bg-slate-600"></div>
+                <div class="flex space-x-2">
+                    <button id="btn-zoom-in" class="p-2 rounded-lg hover:bg-slate-700 transition-colors" title="放大">
+                        <i class="fas fa-search-plus"></i>
+                    </button>
+                    <button id="btn-zoom-out" class="p-2 rounded-lg hover:bg-slate-700 transition-colors" title="缩小">
+                        <i class="fas fa-search-minus"></i>
+                    </button>
+                    <button id="btn-fullscreen" class="p-2 rounded-lg hover:bg-slate-700 transition-colors" title="全屏">
+                        <i class="fas fa-expand"></i>
+                    </button>
+                    <button id="btn-clear-highlights" class="p-2 rounded-lg hover:bg-slate-700 transition-colors" title="清除高亮">
+                        <i class="fas fa-eraser"></i>
+                    </button>
+                    <button id="btn-settings" class="p-2 rounded-lg hover:bg-slate-700 transition-colors" title="设置">
+                        <i class="fas fa-cog"></i>
+                    </button>
+                    <button id="btn-info" class="p-2 rounded-lg hover:bg-slate-700 transition-colors" title="信息">
+                        <i class="fas fa-info-circle"></i>
+                    </button>
+                </div>
+            </div>
+            <div class="text-sm text-slate-400">
+                点击左侧【Browse】按钮选择 PDF 文件夹
+            </div>
+        </header>
+        
+        <!-- 主内容区 -->
+        <div class="flex flex-1 overflow-hidden">
+            <!-- 左侧侧边栏 - 文件浏览器 -->
+            <aside id="sidebar-left" class="sidebar-left w-80 bg-slate-800 border-r border-slate-700 flex flex-col relative transition-all duration-300 ease-in-out">
+                <div class="p-4 border-b border-slate-700">
+                    <button id="btn-browse" class="w-full bg-indigo-600 hover:bg-indigo-700 text-white py-2 px-4 rounded-lg font-medium transition-colors">
+                        <i class="fas fa-folder-open mr-2"></i>Browse
+                    </button>
+                </div>
+                <div class="flex-1 overflow-y-auto p-2" id="file-list-container">
+                    <div class="text-slate-400 text-sm text-center py-8">
+                        <i class="fas fa-file-pdf text-4xl mb-2 opacity-50"></i>
+                        <p>选择文件夹后显示 PDF 文件</p>
+                    </div>
+                </div>
+                
+                <!-- 折叠按钮 -->
+                <div class="sidebar-toggle-left" id="toggle-left">
+                    <i class="fas fa-chevron-left text-xs"></i>
+                </div>
+            </aside>
+            
+            <!-- 中央主界面 - PDF 渲染 -->
+            <main class="flex-1 bg-slate-900 flex items-center justify-center overflow-auto p-4">
+                <div id="pdf-container" class="pdf-container relative bg-white shadow-2xl rounded-lg overflow-hidden">
+                    <canvas id="pdf-canvas"></canvas>
+                    <canvas id="highlight-canvas" class="highlight-overlay"></canvas>
+                    <!-- 默认提示信息 -->
+                    <div id="pdf-placeholder" class="absolute inset-0 flex flex-col items-center justify-center text-slate-500">
+                        <i class="fas fa-file-pdf text-6xl mb-4 opacity-30"></i>
+                        <p class="text-lg">请从左侧选择 PDF 文件</p>
+                        <p class="text-sm mt-2">支持预览、高亮标记和重命名</p>
+                    </div>
+                </div>
+            </main>
+            
+            <!-- 右侧侧边栏 - 重命名面板 -->
+            <aside id="sidebar-right" class="sidebar-right w-80 bg-slate-800 border-l border-slate-700 flex flex-col relative min-h-0 overflow-hidden transition-all duration-300 ease-in-out">
+                <!-- Tab 切换 -->
+                <div class="flex border-b border-slate-700">
+                    <button class="tab-btn active flex-1 py-3 px-4 text-sm font-medium" data-tab="tab1">
+                        <i class="fas fa-edit mr-2"></i>Tab 1
+                    </button>
+                    <button class="tab-btn flex-1 py-3 px-4 text-sm font-medium text-slate-400" data-tab="tab2">
+                        <i class="fas fa-plus mr-2"></i>Tab 2
+                    </button>
+                </div>
+                
+                <!-- Tab 1 内容 -->
+                <div id="tab1" class="flex-1 flex flex-col min-h-0">
+                    <div class="flex-1 overflow-y-auto p-4 min-h-0">
+                        <label class="block text-sm font-medium text-slate-300 mb-2">重命名文本（每行一个名称）</label>
+                        <textarea 
+                            id="rename-textarea" 
+                            class="w-full h-64 bg-slate-700 border border-slate-600 rounded-lg p-3 text-sm text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent resize-none"
+                            placeholder="输入重命名文本，每行一个&#10;例如：&#10;合同-2026-001&#10;合同-2026-002&#10;协议-最终版"
+                        ></textarea>
+                    </div>
+                    <div class="flex-shrink-0 p-4 pt-0">
+                        <button id="btn-toggle-mode" class="w-full bg-emerald-600 hover:bg-emerald-700 text-white py-2 px-4 rounded-lg font-medium transition-colors">
+                            <i class="fas fa-exchange-alt mr-2"></i>切换为快捷键
+                        </button>
+                    </div>
+                </div>
+                
+                <!-- Tab 2 内容（预留） -->
+                <div id="tab2" class="flex-1 p-4 hidden">
+                    <div class="flex items-center justify-center h-full text-slate-400">
+                        <div class="text-center">
+                            <i class="fas fa-tools text-4xl mb-4 opacity-30"></i>
+                            <p>功能开发中...</p>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- 折叠按钮 -->
+                <div class="sidebar-toggle-right" id="toggle-right">
+                    <i class="fas fa-chevron-right text-xs"></i>
+                </div>
+            </aside>
+        </div>
+        
+        <!-- 状态栏 -->
+        <footer class="bg-slate-800 border-t border-slate-700 px-4 py-2 text-xs text-slate-400 flex justify-between">
+            <div id="status-info">就绪</div>
+            <div id="file-info">无文件选中</div>
+        </footer>
+    </div>
+    
+    <script>
+        // ==================== 初始化与全局变量 ====================
+        // PDF.js Worker 配置
+        pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@latest/build/pdf.worker.min.js';
+        
+        // 全局状态
+        const state = {
+            directoryHandle: null,           // 目录句柄
+            fileHandle: null,                // 当前选中的文件句柄
+            currentFile: null,               // 当前文件对象
+            currentFileName: '',             // 当前文件名
+            pdfDocument: null,               // PDF 文档对象
+            scale: 1.0,                      // 缩放比例
+            isRightSidebarCollapsed: false,  // 右侧边栏折叠状态
+            isLeftSidebarCollapsed: false,   // 左侧边栏折叠状态
+            renameMode: false,               // 重命名模式（false: 编辑, true: 快捷键）
+            renameButtons: [],               // 生成的快捷键按钮引用（用于销毁）
+        };
+        
+        // DOM 元素引用
+        const elements = {
+            btnBrowse: document.getElementById('btn-browse'),
+            fileListContainer: document.getElementById('file-list-container'),
+            pdfCanvas: document.getElementById('pdf-canvas'),
+            highlightCanvas: document.getElementById('highlight-canvas'),
+            pdfContainer: document.getElementById('pdf-container'),
+            pdfPlaceholder: document.getElementById('pdf-placeholder'),
+            renameTextarea: document.getElementById('rename-textarea'),
+            btnToggleMode: document.getElementById('btn-toggle-mode'),
+            sidebarLeft: document.getElementById('sidebar-left'),
+            sidebarRight: document.getElementById('sidebar-right'),
+            toggleLeft: document.getElementById('toggle-left'),
+            toggleRight: document.getElementById('toggle-right'),
+            statusInfo: document.getElementById('status-info'),
+            fileInfo: document.getElementById('file-info'),
+            tab1: document.getElementById('tab1'),
+            tab2: document.getElementById('tab2'),
+        };
+        
+        // ==================== 工具函数 ====================
+        
+        /**
+         * 更新状态栏信息
+         */
+        function updateStatus(message, isError = false) {
+            elements.statusInfo.textContent = message;
+            elements.statusInfo.className = isError ? 'text-red-400' : 'text-slate-400';
+        }
+        
+        /**
+         * 更新文件信息显示
+         */
+        function updateFileInfo(fileName) {
+            elements.fileInfo.textContent = fileName ? `当前文件: ${fileName}` : '无文件选中';
+        }
+        
+        /**
+         * 显示/隐藏加载状态
+         */
+        function showLoading(show) {
+            if (show) {
+                updateStatus('正在加载...');
+            } else {
+                updateStatus('就绪');
+            }
+        }
+        
+        // ==================== 左侧栏：文件浏览器 ====================
+        
+        /**
+         * 递归遍历目录，收集所有 PDF 文件
+         * @param {FileSystemDirectoryHandle} dirHandle - 目录句柄
+         * @param {string} path - 当前路径
+         * @returns {Promise<Array>} PDF 文件列表
+         */
+        async function getPdfFiles(dirHandle, path = '') {
+            const files = [];
+            for await (const [name, handle] of dirHandle.entries()) {
+                if (handle.kind === 'file' && name.toLowerCase().endsWith('.pdf')) {
+                    files.push({
+                        name: name,
+                        path: path + name,
+                        handle: handle
+                    });
+                } else if (handle.kind === 'directory') {
+                    const subFiles = await getPdfFiles(handle, path + name + '/');
+                    files.push(...subFiles);
+                }
+            }
+            return files;
+        }
+        
+        /**
+         * 渲染文件列表
+         */
+        function renderFileList(files) {
+            elements.fileListContainer.innerHTML = '';
+            
+            if (files.length === 0) {
+                elements.fileListContainer.innerHTML = `
+                    <div class="text-slate-400 text-sm text-center py-8">
+                        <i class="fas fa-folder-open text-4xl mb-2 opacity-50"></i>
+                        <p>未找到 PDF 文件</p>
+                    </div>
+                `;
+                return;
+            }
+            
+            const list = document.createElement('div');
+            list.className = 'space-y-1';
+            
+            files.forEach((file, index) => {
+                const item = document.createElement('div');
+                item.className = 'file-item p-2 rounded cursor-pointer flex items-center space-x-2';
+                item.dataset.index = index;
+                item.dataset.fileName = file.name;
+                
+                item.innerHTML = `
+                    <i class="fas fa-file-pdf text-red-400"></i>
+                    <span class="text-sm truncate">${file.name}</span>
+                `;
+                
+                item.addEventListener('click', () => selectFile(file, item));
+                list.appendChild(item);
+            });
+            
+            elements.fileListContainer.appendChild(list);
+        }
+        
+        /**
+         * 选择文件
+         */
+        async function selectFile(file, element) {
+            // 移除之前的选中状态
+            document.querySelectorAll('.file-item.active').forEach(el => {
+                el.classList.remove('active');
+            });
+            
+            // 添加当前选中状态
+            element.classList.add('active');
+            
+            // 更新状态
+            state.fileHandle = file.handle;
+            state.currentFileName = file.name;
+            updateFileInfo(file.name);
+            
+            // 加载 PDF
+            await loadPdf(file.handle);
+        }
+        
+        /**
+         * 刷新文件列表（保持选中状态）
+         */
+        async function refreshFileList() {
+            if (!state.directoryHandle) return;
+            
+            try {
+                const files = await getPdfFiles(state.directoryHandle);
+                renderFileList(files);
+                
+                // 如果之前有选中文件，尝试重新选中
+                if (state.currentFileName) {
+                    const items = document.querySelectorAll('.file-item');
+                    for (const item of items) {
+                        if (item.dataset.fileName === state.currentFileName) {
+                            item.classList.add('active');
+                            // 滚动到可见区域
+                            item.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+                            break;
+                        }
+                    }
+                }
+            } catch (error) {
+                console.error('刷新文件列表失败:', error);
+                updateStatus('刷新文件列表失败', true);
+            }
+        }
+        
+        /**
+         * 浏览文件夹
+         */
+        async function browseDirectory() {
+            try {
+                // 请求目录选择权限
+                state.directoryHandle = await window.showDirectoryPicker({
+                    mode: 'readwrite'  // 需要读写权限以支持重命名
+                });
+                
+                updateStatus('正在扫描文件夹...');
+                
+                // 获取所有 PDF 文件
+                const files = await getPdfFiles(state.directoryHandle);
+                renderFileList(files);
+                
+                updateStatus(`找到 ${files.length} 个 PDF 文件`);
+                
+            } catch (error) {
+                if (error.name === 'AbortError') {
+                    updateStatus('用户取消了文件夹选择');
+                } else {
+                    console.error('选择文件夹失败:', error);
+                    updateStatus('选择文件夹失败: ' + error.message, true);
+                }
+            }
+        }
+        
+        // ==================== 中央主界面：PDF 渲染与高亮 ====================
+        
+        /**
+         * 加载并渲染 PDF
+         */
+        async function loadPdf(fileHandle) {
+            showLoading(true);
+            
+            try {
+                // 获取文件对象
+                const file = await fileHandle.getFile();
+                state.currentFile = file;
+                
+                // 转换为 ArrayBuffer
+                const arrayBuffer = await file.arrayBuffer();
+                
+                // 加载 PDF 文档
+                const loadingTask = pdfjsLib.getDocument({ data: arrayBuffer });
+                state.pdfDocument = await loadingTask.promise;
+                
+                // 渲染第一页
+                await renderPage(1);
+                
+                // 隐藏占位符，显示 Canvas
+                elements.pdfPlaceholder.style.display = 'none';
+                
+                // 触发 OCR（模拟）
+                await triggerLocalOCR(file);
+                
+                showLoading(false);
+                updateStatus(`已加载: ${file.name}`);
+                
+            } catch (error) {
+                console.error('加载 PDF 失败:', error);
+                showLoading(false);
+                updateStatus('加载 PDF 失败: ' + error.message, true);
+                elements.pdfPlaceholder.style.display = 'flex';
+            }
+        }
+        
+        /**
+         * 渲染指定页码
+         */
+        async function renderPage(pageNumber) {
+            const page = await state.pdfDocument.getPage(pageNumber);
+            const viewport = page.getViewport({ scale: state.scale });
+            
+            // 设置 Canvas 尺寸
+            elements.pdfCanvas.width = viewport.width;
+            elements.pdfCanvas.height = viewport.height;
+            elements.highlightCanvas.width = viewport.width;
+            elements.highlightCanvas.height = viewport.height;
+            
+            // 渲染到 Canvas
+            const ctx = elements.pdfCanvas.getContext('2d');
+            await page.render({
+                canvasContext: ctx,
+                viewport: viewport
+            }).promise;
+            
+            // 清除之前的高亮
+            clearHighlights();
+        }
+        
+        /**
+         * 清除所有高亮
+         */
+        function clearHighlights() {
+            const ctx = elements.highlightCanvas.getContext('2d');
+            ctx.clearRect(0, 0, elements.highlightCanvas.width, elements.highlightCanvas.height);
+        }
+        
+        /**
+         * 绘制高亮框
+         * @param {Array} coordinates - 坐标数组 [[x1, y1, w1, h1], ...]
+         */
+        function drawHighlightBoxes(coordinates) {
+            const ctx = elements.highlightCanvas.getContext('2d');
+            
+            // 设置高亮样式
+            ctx.fillStyle = 'rgba(255, 255, 0, 0.4)';
+            ctx.strokeStyle = 'rgba(255, 255, 0, 0.8)';
+            ctx.lineWidth = 1;
+            
+            // 绘制每个高亮框
+            coordinates.forEach(([x, y, w, h]) => {
+                ctx.fillRect(x, y, w, h);
+                ctx.strokeRect(x, y, w, h);
+            });
+        }
+        
+        /**
+         * 触发本地 OCR 服务（模拟）
+         * @param {File} fileBlob - PDF 文件
+         */
+        async function triggerLocalOCR(fileBlob) {
+            try {
+                // 将 PDF 第一页转换为图片（简化处理，实际 OCR 需要后端支持）
+                // 这里只是模拟调用，实际实现需要将 Canvas 转为图片数据
+                const imageData = elements.pdfCanvas.toDataURL('image/png');
+                
+                // 模拟发送到本地 OCR 服务
+                const response = await fetch('http://localhost:8000/ocr', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        image: imageData,
+                        fileName: state.currentFileName
+                    })
+                });
+                
+                if (!response.ok) {
+                    throw new Error(`OCR 服务返回错误: ${response.status}`);
+                }
+                
+                const result = await response.json();
+                
+                // 如果 OCR 返回了坐标数据，绘制高亮
+                if (result.coordinates && Array.isArray(result.coordinates)) {
+                    drawHighlightBoxes(result.coordinates);
+                    console.log('OCR 高亮已绘制:', result.coordinates.length, '个区域');
+                }
+                
+            } catch (error) {
+                // OCR 服务不可用或错误时，仅打印日志，不影响界面
+                console.log('OCR 服务调用失败（这是预期的，因为 OCR 服务可能未运行）:', error.message);
+                console.log('提示: 请确保本地 OCR 服务运行在 http://localhost:8000/ocr');
+            }
+        }
+        
+        // ==================== 右侧栏：重命名面板 ====================
+        
+        /**
+         * 切换 Tab
+         */
+        function switchTab(tabName) {
+            // 更新 Tab 按钮状态
+            document.querySelectorAll('.tab-btn').forEach(btn => {
+                if (btn.dataset.tab === tabName) {
+                    btn.classList.add('active');
+                    btn.classList.remove('text-slate-400');
+                } else {
+                    btn.classList.remove('active');
+                    btn.classList.add('text-slate-400');
+                }
+            });
+            
+            // 切换内容
+            elements.tab1.style.display = tabName === 'tab1' ? 'flex' : 'none';
+            elements.tab2.style.display = tabName === 'tab2' ? 'flex' : 'none';
+        }
+        
+        /**
+         * 切换重命名模式（编辑 ↔ 快捷键）
+         */
+        function toggleRenameMode() {
+            if (state.renameMode) {
+                // 切换回编辑模式
+                switchToEditMode();
+            } else {
+                // 切换到快捷键模式
+                switchToShortcutMode();
+            }
+        }
+        
+        /**
+         * 切换到快捷键模式
+         */
+        function switchToShortcutMode() {
+            const text = elements.renameTextarea.value.trim();
+            if (!text) {
+                updateStatus('请先输入重命名文本', true);
+                return;
+            }
+            
+            // 按行分割，过滤空行
+            const lines = text.split('\n').filter(line => line.trim() !== '');
+            
+            if (lines.length === 0) {
+                updateStatus('没有有效的重命名文本', true);
+                return;
+            }
+            
+            // 隐藏 Textarea 容器
+            elements.renameTextarea.style.display = 'none';
+            
+            // 清空按钮容器（如果有）
+            const buttonContainer = document.getElementById('rename-buttons-container');
+            if (buttonContainer) {
+                buttonContainer.remove();
+            }
+            
+            // 创建按钮容器
+            const container = document.createElement('div');
+            container.id = 'rename-buttons-container';
+            container.className = 'flex-1 overflow-y-auto space-y-2';
+            
+            // 为每一行创建一个按钮
+            lines.forEach(line => {
+                const btn = document.createElement('button');
+                btn.className = 'rename-btn w-full bg-slate-700 hover:bg-slate-600 text-white py-3 px-4 rounded-lg text-left text-sm font-medium transition-all';
+                btn.textContent = line;
+                btn.title = '双击重命名为: ' + line;
+                btn.addEventListener('dblclick', () => renameFile(line));
+                container.appendChild(btn);
+            });
+            
+            // 插入到 Textarea 的父元素中
+            elements.renameTextarea.parentNode.insertBefore(container, elements.renameTextarea.nextSibling);
+            
+            // 更新按钮状态
+            state.renameMode = true;
+            state.renameButtons = Array.from(container.querySelectorAll('button'));
+            elements.btnToggleMode.innerHTML = '<i class="fas fa-edit mr-2"></i>返回编辑';
+            elements.btnToggleMode.classList.remove('bg-emerald-600', 'hover:bg-emerald-700');
+            elements.btnToggleMode.classList.add('bg-amber-600', 'hover:bg-amber-700');
+            
+            updateStatus(`已创建 ${lines.length} 个快捷键按钮，双击按钮可重命名`);
+        }
+        
+        /**
+         * 切换回编辑模式
+         */
+        function switchToEditMode() {
+            // 销毁按钮容器及所有事件监听器
+            const buttonContainer = document.getElementById('rename-buttons-container');
+            if (buttonContainer) {
+                // 移除所有事件监听器（通过克隆节点）
+                const buttons = buttonContainer.querySelectorAll('button');
+                buttons.forEach(btn => {
+                    const newBtn = btn.cloneNode(true);
+                    btn.parentNode.replaceChild(newBtn, btn);
+                });
+                
+                // 移除容器
+                buttonContainer.remove();
+            }
+            
+            // 显示 Textarea
+            elements.renameTextarea.style.display = 'block';
+            
+            // 更新按钮状态
+            state.renameMode = false;
+            state.renameButtons = [];
+            elements.btnToggleMode.innerHTML = '<i class="fas fa-exchange-alt mr-2"></i>切换为快捷键';
+            elements.btnToggleMode.classList.remove('bg-amber-600', 'hover:bg-amber-700');
+            elements.btnToggleMode.classList.add('bg-emerald-600', 'hover:bg-emerald-700');
+            
+            updateStatus('已返回编辑模式');
+        }
+        
+        /**
+         * 重命名文件
+         * @param {string} newName - 新文件名（不含扩展名）
+         */
+        async function renameFile(newName) {
+            if (!state.fileHandle || !state.currentFileName) {
+                updateStatus('没有选中的文件', true);
+                return;
+            }
+            
+            try {
+                updateStatus(`正在重命名: ${state.currentFileName} → ${newName}.pdf`);
+                
+                // 确保新文件名以 .pdf 结尾
+                const fullNewName = newName.endsWith('.pdf') ? newName : newName + '.pdf';
+                
+                // 调用 File System Access API 的 move 方法进行物理重命名
+                await state.fileHandle.move(fullNewName);
+                
+                // 更新状态
+                state.currentFileName = fullNewName;
+                updateFileInfo(fullNewName);
+                
+                // 刷新文件列表（保持选中状态）
+                await refreshFileList();
+                
+                updateStatus(`重命名成功: ${fullNewName}`);
+                
+            } catch (error) {
+                console.error('重命名失败:', error);
+                updateStatus('重命名失败: ' + error.message, true);
+            }
+        }
+        
+        // ==================== 侧边栏折叠功能 ====================
+        
+        /**
+         * 切换左侧栏折叠状态
+         */
+        function toggleLeftSidebar() {
+            state.isLeftSidebarCollapsed = !state.isLeftSidebarCollapsed;
+            
+            // 移除之前可能存在的浮动 toggle 按钮
+            const existingToggle = document.getElementById('floating-toggle-left');
+            if (existingToggle) {
+                existingToggle.remove();
+            }
+            
+            if (state.isLeftSidebarCollapsed) {
+                elements.sidebarLeft.classList.add('collapsed');
+                elements.toggleLeft.innerHTML = '<i class="fas fa-chevron-right text-xs"></i>';
+                
+                // 创建浮动 toggle 按钮
+                const floatingToggle = document.createElement('div');
+                floatingToggle.id = 'floating-toggle-left';
+                floatingToggle.className = 'floating-toggle-button';
+                floatingToggle.innerHTML = '<i class="fas fa-chevron-right text-xs"></i>';
+                floatingToggle.style.cssText = `
+                    position: fixed;
+                    left: 0;
+                    right: auto;
+                    top: 50%;
+                    transform: translateY(-50%);
+                    z-index: 1000;
+                    background: #1e293b;
+                    border: 2px solid #475569;
+                    border-radius: 0 4px 4px 0;
+                    width: 28px;
+                    height: 56px;
+                    display: flex;
+                    align-items: center;
+                    justify-content: center;
+                    cursor: pointer;
+                    box-shadow: 2px 0 12px rgba(0, 0, 0, 0.5);
+                    transition: all 0.3s ease;
+                `;
+                floatingToggle.addEventListener('click', toggleLeftSidebar);
+                floatingToggle.addEventListener('mouseenter', () => {
+                    floatingToggle.style.background = '#334155';
+                    floatingToggle.style.borderColor = '#6366f1';
+                });
+                floatingToggle.addEventListener('mouseleave', () => {
+                    floatingToggle.style.background = '#1e293b';
+                    floatingToggle.style.borderColor = '#475569';
+                });
+                document.body.appendChild(floatingToggle);
+            } else {
+                elements.sidebarLeft.classList.remove('collapsed');
+                elements.toggleLeft.innerHTML = '<i class="fas fa-chevron-left text-xs"></i>';
+            }
+        }
+        
+        /**
+         * 切换右侧栏折叠状态
+         */
+        function toggleRightSidebar() {
+            state.isRightSidebarCollapsed = !state.isRightSidebarCollapsed;
+            
+            // 移除之前可能存在的浮动 toggle 按钮
+            const existingToggle = document.getElementById('floating-toggle-right');
+            if (existingToggle) {
+                existingToggle.remove();
+            }
+            
+            if (state.isRightSidebarCollapsed) {
+                elements.sidebarRight.classList.add('collapsed');
+                elements.toggleRight.innerHTML = '<i class="fas fa-chevron-left text-xs"></i>';
+                
+                // 创建浮动 toggle 按钮
+                const floatingToggle = document.createElement('div');
+                floatingToggle.id = 'floating-toggle-right';
+                floatingToggle.className = 'floating-toggle-button';
+                floatingToggle.innerHTML = '<i class="fas fa-chevron-left text-xs"></i>';
+                floatingToggle.style.cssText = `
+                    position: fixed;
+                    left: auto;
+                    right: 0;
+                    top: 50%;
+                    transform: translateY(-50%);
+                    z-index: 1000;
+                    background: #1e293b;
+                    border: 2px solid #475569;
+                    border-radius: 4px 0 0 4px;
+                    width: 28px;
+                    height: 56px;
+                    display: flex;
+                    align-items: center;
+                    justify-content: center;
+                    cursor: pointer;
+                    box-shadow: -2px 0 12px rgba(0, 0, 0, 0.5);
+                    transition: all 0.3s ease;
+                `;
+                floatingToggle.addEventListener('click', toggleRightSidebar);
+                floatingToggle.addEventListener('mouseenter', () => {
+                    floatingToggle.style.background = '#334155';
+                    floatingToggle.style.borderColor = '#6366f1';
+                });
+                floatingToggle.addEventListener('mouseleave', () => {
+                    floatingToggle.style.background = '#1e293b';
+                    floatingToggle.style.borderColor = '#475569';
+                });
+                document.body.appendChild(floatingToggle);
+            } else {
+                elements.sidebarRight.classList.remove('collapsed');
+                elements.toggleRight.innerHTML = '<i class="fas fa-chevron-right text-xs"></i>';
+            }
+        }
+        
+        // ==================== 工具栏功能预留 ====================
+        
+        /**
+         * 放大
+         */
+        function zoomIn() {
+            state.scale = Math.min(state.scale + 0.25, 3.0);
+            if (state.pdfDocument) {
+                renderPage(1);
+            }
+            updateStatus(`缩放: ${Math.round(state.scale * 100)}%`);
+        }
+        
+        /**
+         * 缩小
+         */
+        function zoomOut() {
+            state.scale = Math.max(state.scale - 0.25, 0.5);
+            if (state.pdfDocument) {
+                renderPage(1);
+            }
+            updateStatus(`缩放: ${Math.round(state.scale * 100)}%`);
+        }
+        
+        /**
+         * 全屏
+         */
+        function toggleFullscreen() {
+            if (!document.fullscreenElement) {
+                document.documentElement.requestFullscreen().catch(err => {
+                    console.log('全屏失败:', err);
+                });
+            } else {
+                document.exitFullscreen();
+            }
+        }
+        
+        // ==================== 事件绑定 ====================
+        
+        function initEventListeners() {
+            // 浏览文件夹按钮
+            elements.btnBrowse.addEventListener('click', browseDirectory);
+            
+            // Tab 切换
+            document.querySelectorAll('.tab-btn').forEach(btn => {
+                btn.addEventListener('click', () => {
+                    switchTab(btn.dataset.tab);
+                });
+            });
+            
+            // 重命名模式切换
+            elements.btnToggleMode.addEventListener('click', toggleRenameMode);
+            
+            // 侧边栏折叠
+            elements.toggleLeft.addEventListener('click', toggleLeftSidebar);
+            elements.toggleRight.addEventListener('click', toggleRightSidebar);
+            
+            // 工具栏按钮（预留功能）
+            document.getElementById('btn-zoom-in').addEventListener('click', zoomIn);
+            document.getElementById('btn-zoom-out').addEventListener('click', zoomOut);
+            document.getElementById('btn-fullscreen').addEventListener('click', toggleFullscreen);
+            document.getElementById('btn-clear-highlights').addEventListener('click', clearHighlights);
+            document.getElementById('btn-settings').addEventListener('click', () => {
+                updateStatus('设置功能开发中...');
+            });
+            document.getElementById('btn-info').addEventListener('click', () => {
+                updateStatus('PDF 阅读与重命名工具 v1.0');
+            });
+            
+            // 键盘快捷键
+            document.addEventListener('keydown', (e) => {
+                if (e.ctrlKey || e.metaKey) {
+                    switch (e.key) {
+                        case '+':
+                        case '=':
+                            e.preventDefault();
+                            zoomIn();
+                            break;
+                        case '-':
+                            e.preventDefault();
+                            zoomOut();
+                            break;
+                        case '0':
+                            e.preventDefault();
+                            state.scale = 1.0;
+                            if (state.pdfDocument) renderPage(1);
+                            updateStatus('缩放重置为 100%');
+                            break;
+                    }
+                }
+            });
+        }
+        
+        // ==================== 初始化 ====================
+        
+        function init() {
+            initEventListeners();
+            updateStatus('就绪 - 请先选择文件夹');
+        }
+        
+        // 页面加载完成后初始化
+        document.addEventListener('DOMContentLoaded', init);
+    </script>
+</body>
+</html>
