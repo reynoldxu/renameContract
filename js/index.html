@@ -156,6 +156,49 @@
             transform: translateY(-2px);
             box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
         }
+        
+        /* 分页控件样式 */
+        .page-controls {
+            display: flex;
+            align-items: center;
+            space-x: 2px;
+        }
+        .page-input {
+            width: 48px;
+            height: 32px;
+            text-align: center;
+            background: #334155;
+            border: 1px solid #475569;
+            border-radius: 4px;
+            color: white;
+            font-size: 12px;
+            outline: none;
+        }
+        .page-input:focus {
+            border-color: #6366f1;
+            box-shadow: 0 0 0 1px #6366f1;
+        }
+        .page-btn {
+            width: 32px;
+            height: 32px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: #334155;
+            border: 1px solid #475569;
+            border-radius: 4px;
+            color: #94a3b8;
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+        .page-btn:hover:not(:disabled) {
+            background: #475569;
+            color: white;
+        }
+        .page-btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
     </style>
 </head>
 <body class="bg-slate-900 text-white min-h-screen overflow-x-hidden">
@@ -167,7 +210,7 @@
                     <i class="fas fa-file-pdf mr-2"></i>PDF 工具
                 </h1>
                 <div class="h-6 w-px bg-slate-600"></div>
-                <div class="flex space-x-2">
+                <div class="flex items-center space-x-2">
                     <button id="btn-zoom-in" class="p-2 rounded-lg hover:bg-slate-700 transition-colors" title="放大">
                         <i class="fas fa-search-plus"></i>
                     </button>
@@ -177,6 +220,19 @@
                     <button id="btn-fullscreen" class="p-2 rounded-lg hover:bg-slate-700 transition-colors" title="全屏">
                         <i class="fas fa-expand"></i>
                     </button>
+                    <div class="h-6 w-px bg-slate-600"></div>
+                    <!-- 分页控件 -->
+                    <div class="page-controls flex items-center space-x-1">
+                        <button id="btn-prev-page" class="page-btn" title="上一页 (←)" disabled>
+                            <i class="fas fa-chevron-left"></i>
+                        </button>
+                        <input type="number" id="page-input" class="page-input" value="1" min="1" title="输入页码跳转">
+                        <span id="page-total" class="text-xs text-slate-400">/ 0</span>
+                        <button id="btn-next-page" class="page-btn" title="下一页 (→)" disabled>
+                            <i class="fas fa-chevron-right"></i>
+                        </button>
+                    </div>
+                    <div class="h-6 w-px bg-slate-600"></div>
                     <button id="btn-clear-highlights" class="p-2 rounded-lg hover:bg-slate-700 transition-colors" title="清除高亮">
                         <i class="fas fa-eraser"></i>
                     </button>
@@ -299,6 +355,9 @@
             isLeftSidebarCollapsed: false,   // 左侧边栏折叠状态
             renameMode: false,               // 重命名模式（false: 编辑, true: 快捷键）
             renameButtons: [],               // 生成的快捷键按钮引用（用于销毁）
+            currentPage: 1,                  // 当前页码
+            totalPages: 0,                   // 总页数
+            isScrolling: false,              // 防抖：滚轮滚动中标志
         };
         
         // DOM 元素引用
@@ -372,6 +431,70 @@
          */
         function updateFileInfo(fileName) {
             elements.fileInfo.textContent = fileName ? `当前文件: ${fileName}` : '无文件选中';
+        }
+        
+        /**
+         * 清除文件列表中的选中状态
+         */
+        function clearFileSelection() {
+            document.querySelectorAll('.file-item.active').forEach(el => {
+                el.classList.remove('active');
+            });
+        }
+        
+        /**
+         * 恢复文件列表中的选中状态
+         */
+        function restoreFileSelection() {
+            if (!state.currentFileName) return;
+            const item = document.querySelector(`.file-item[data-file-name="${CSS.escape(state.currentFileName)}"]`);
+            if (item) {
+                item.classList.add('active');
+                item.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+            }
+        }
+        
+        /**
+         * 通用DOM元素创建辅助函数
+         * @param {string} tag - 标签名
+         * @param {Object} options - 配置选项
+         * @param {string} options.className - 类名
+         * @param {string} options.id - ID
+         * @param {string} options.innerHTML - 内部HTML
+         * @param {Object} options.attrs - 属性对象
+         * @param {Object} options.listeners - 事件监听器对象
+         * @returns {HTMLElement} 创建的元素
+         */
+        function createElement(tag, { className = '', id = '', innerHTML = '', attrs = {}, listeners = {} } = {}) {
+            const el = document.createElement(tag);
+            if (className) el.className = className;
+            if (id) el.id = id;
+            if (innerHTML) el.innerHTML = innerHTML;
+            for (const [key, val] of Object.entries(attrs)) {
+                el.setAttribute(key, val);
+            }
+            for (const [event, handler] of Object.entries(listeners)) {
+                el.addEventListener(event, handler);
+            }
+            return el;
+        }
+        
+        /**
+         * 通用异步操作包装函数，统一错误处理
+         * @param {Function} fn - 异步函数
+         * @param {string} errorMessage - 错误提示信息
+         * @param {string} contextMessage - 上下文提示信息（可选）
+         * @returns {Promise<any|null>} 函数结果或 null（出错时）
+         */
+        async function safeAsync(fn, errorMessage, contextMessage = '') {
+            try {
+                if (contextMessage) updateStatus(contextMessage);
+                return await fn();
+            } catch (error) {
+                console.error(errorMessage, error);
+                updateStatus(errorMessage + ': ' + error.message, true);
+                return null;
+            }
         }
         
         /**
@@ -449,9 +572,7 @@
          */
         async function selectFile(file, element) {
             // 移除之前的选中状态
-            document.querySelectorAll('.file-item.active').forEach(el => {
-                el.classList.remove('active');
-            });
+            clearFileSelection();
             
             // 添加当前选中状态
             element.classList.add('active');
@@ -471,26 +592,13 @@
         async function refreshFileList() {
             if (!state.directoryHandle) return;
             
-            try {
+            await safeAsync(async () => {
                 const files = await getPdfFiles(state.directoryHandle);
                 renderFileList(files);
                 
                 // 如果之前有选中文件，尝试重新选中
-                if (state.currentFileName) {
-                    const items = document.querySelectorAll('.file-item');
-                    for (const item of items) {
-                        if (item.dataset.fileName === state.currentFileName) {
-                            item.classList.add('active');
-                            // 滚动到可见区域
-                            item.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-                            break;
-                        }
-                    }
-                }
-            } catch (error) {
-                console.error('刷新文件列表失败:', error);
-                updateStatus('刷新文件列表失败', true);
-            }
+                restoreFileSelection();
+            }, '刷新文件列表失败');
         }
         
         /**
@@ -529,7 +637,7 @@
         async function loadPdf(fileHandle) {
             showLoading(true);
             
-            try {
+            const result = await safeAsync(async () => {
                 // 获取文件对象
                 const file = await fileHandle.getFile();
                 state.currentFile = file;
@@ -541,8 +649,13 @@
                 const loadingTask = pdfjsLib.getDocument({ data: arrayBuffer });
                 state.pdfDocument = await loadingTask.promise;
                 
+                // 初始化页码状态
+                state.totalPages = state.pdfDocument.numPages;
+                state.currentPage = 1;
+                
                 // 渲染第一页
                 await renderPage(1);
+                updatePageInfo();
                 
                 // 隐藏占位符，显示 Canvas
                 elements.pdfPlaceholder.style.display = 'none';
@@ -551,12 +664,13 @@
                 await triggerLocalOCR(file);
                 
                 showLoading(false);
-                updateStatus(`已加载: ${file.name}`);
+                updateStatus(`已加载: ${file.name} (${state.totalPages} 页)`);
                 
-            } catch (error) {
-                console.error('加载 PDF 失败:', error);
+                return true;
+            }, '加载 PDF 失败');
+            
+            if (!result) {
                 showLoading(false);
-                updateStatus('加载 PDF 失败: ' + error.message, true);
                 elements.pdfPlaceholder.style.display = 'flex';
             }
         }
@@ -617,7 +731,7 @@
          * @param {File} fileBlob - PDF 文件
          */
         async function triggerLocalOCR(fileBlob) {
-            try {
+            await safeAsync(async () => {
                 // 使用纯函数获取 Canvas 图片数据
                 const imageData = getCanvasImageData(elements.pdfCanvas);
                 if (!imageData) {
@@ -648,12 +762,7 @@
                     drawHighlightBoxes(result.coordinates);
                     console.log('OCR 高亮已绘制:', result.coordinates.length, '个区域');
                 }
-                
-            } catch (error) {
-                // OCR 服务不可用或错误时，仅打印日志，不影响界面
-                console.log('OCR 服务调用失败（这是预期的，因为 OCR 服务可能未运行）:', error.message);
-                console.log('提示: 请确保本地 OCR 服务运行在 http://localhost:8000/ocr');
-            }
+            }, 'OCR 服务调用失败（这是预期的，因为 OCR 服务可能未运行）');
         }
         
         // ==================== 右侧栏：重命名面板 ====================
@@ -780,25 +889,36 @@
             if (buttonContainer) buttonContainer.remove();
             
             // 创建搜索框
-            const searchInput = document.createElement('input');
-            searchInput.id = 'rename-search-input';
-            searchInput.type = 'text';
-            searchInput.placeholder = '搜索';
-            searchInput.className = 'w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-sm text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent mb-2';
-            searchInput.addEventListener('input', filterRenameButtons);
+            const searchInput = createElement('input', {
+                id: 'rename-search-input',
+                className: 'w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-sm text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent mb-2',
+                attrs: {
+                    type: 'text',
+                    placeholder: '搜索'
+                },
+                listeners: {
+                    input: filterRenameButtons
+                }
+            });
             
             // 创建按钮容器
-            const container = document.createElement('div');
-            container.id = 'rename-buttons-container';
-            container.className = 'flex-1 overflow-y-auto space-y-2';
+            const container = createElement('div', {
+                id: 'rename-buttons-container',
+                className: 'flex-1 overflow-y-auto space-y-2'
+            });
             
             // 为每一行创建一个按钮
             lines.forEach(line => {
-                const btn = document.createElement('button');
-                btn.className = 'rename-btn w-full bg-slate-700 hover:bg-slate-600 text-white py-3 px-4 rounded-lg text-left text-sm font-medium transition-all';
+                const btn = createElement('button', {
+                    className: 'rename-btn w-full bg-slate-700 hover:bg-slate-600 text-white py-3 px-4 rounded-lg text-left text-sm font-medium transition-all',
+                    attrs: {
+                        title: '双击重命名为: ' + line
+                    },
+                    listeners: {
+                        dblclick: () => renameFile(line)
+                    }
+                });
                 btn.textContent = line;
-                btn.title = '双击重命名为: ' + line;
-                btn.addEventListener('dblclick', () => renameFile(line));
                 container.appendChild(btn);
             });
             
@@ -861,7 +981,7 @@
                 return;
             }
             
-            try {
+            await safeAsync(async () => {
                 const fullNewName = ensureExtension(newName);
                 updateStatus(`正在重命名: ${state.currentFileName} → ${fullNewName}`);
                 
@@ -876,11 +996,7 @@
                 await refreshFileList();
                 
                 updateStatus(`重命名成功: ${fullNewName}`);
-                
-            } catch (error) {
-                console.error('重命名失败:', error);
-                updateStatus('重命名失败: ' + error.message, true);
-            }
+            }, '重命名失败');
         }
         
         // ==================== 侧边栏折叠功能 ====================
@@ -1012,7 +1128,7 @@
         function updateZoomAndRender(newScale) {
             state.scale = Math.max(SCALE_MIN, Math.min(SCALE_MAX, newScale));
             if (state.pdfDocument) {
-                renderPage(1);
+                renderPage(state.currentPage);
             }
             updateStatus(`缩放: ${Math.round(state.scale * 100)}%`);
         }
@@ -1044,6 +1160,57 @@
             }
         }
         
+        // ==================== 分页导航功能 ====================
+        
+        /**
+         * 更新页码信息显示
+         */
+        function updatePageInfo() {
+            const pageInput = document.getElementById('page-input');
+            const pageTotal = document.getElementById('page-total');
+            const btnPrev = document.getElementById('btn-prev-page');
+            const btnNext = document.getElementById('btn-next-page');
+            
+            if (pageInput) pageInput.value = state.currentPage;
+            if (pageTotal) pageTotal.textContent = `/ ${state.totalPages}`;
+            
+            if (btnPrev) btnPrev.disabled = state.currentPage <= 1;
+            if (btnNext) btnNext.disabled = state.currentPage >= state.totalPages;
+        }
+        
+        /**
+         * 跳转到指定页
+         * @param {number} pageNumber - 目标页码
+         */
+        async function goToPage(pageNumber) {
+            if (!state.pdfDocument) return;
+            
+            const targetPage = Math.max(1, Math.min(state.totalPages, pageNumber));
+            if (targetPage === state.currentPage) return;
+            
+            state.currentPage = targetPage;
+            await renderPage(state.currentPage);
+            updatePageInfo();
+        }
+        
+        /**
+         * 下一页
+         */
+        function nextPage() {
+            if (state.currentPage < state.totalPages) {
+                goToPage(state.currentPage + 1);
+            }
+        }
+        
+        /**
+         * 上一页
+         */
+        function previousPage() {
+            if (state.currentPage > 1) {
+                goToPage(state.currentPage - 1);
+            }
+        }
+        
         // ==================== 事件绑定 ====================
         
         function initEventListeners() {
@@ -1064,35 +1231,94 @@
             elements.toggleLeft.addEventListener('click', toggleLeftSidebar);
             elements.toggleRight.addEventListener('click', toggleRightSidebar);
             
-            // 工具栏按钮（预留功能）
-            document.getElementById('btn-zoom-in').addEventListener('click', zoomIn);
-            document.getElementById('btn-zoom-out').addEventListener('click', zoomOut);
-            document.getElementById('btn-fullscreen').addEventListener('click', toggleFullscreen);
-            document.getElementById('btn-clear-highlights').addEventListener('click', clearHighlights);
-            document.getElementById('btn-settings').addEventListener('click', () => {
-                updateStatus('设置功能开发中...');
+            // 翻页按钮事件
+            document.getElementById('btn-prev-page').addEventListener('click', previousPage);
+            document.getElementById('btn-next-page').addEventListener('click', nextPage);
+            
+            // 页码输入框事件
+            const pageInput = document.getElementById('page-input');
+            pageInput.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter') {
+                    const page = parseInt(pageInput.value);
+                    if (!isNaN(page)) {
+                        goToPage(page);
+                    }
+                }
             });
-            document.getElementById('btn-info').addEventListener('click', () => {
-                updateStatus('PDF 阅读与重命名工具 v1.0');
+            pageInput.addEventListener('blur', () => {
+                const page = parseInt(pageInput.value);
+                if (!isNaN(page)) {
+                    goToPage(page);
+                } else {
+                    pageInput.value = state.currentPage;
+                }
             });
             
-            // 键盘快捷键
+            // 工具栏按钮和快捷键统一映射表
+            const toolbarActions = [
+                { id: 'btn-zoom-in', action: zoomIn, shortcut: { ctrl: true, keys: ['+', '='] } },
+                { id: 'btn-zoom-out', action: zoomOut, shortcut: { ctrl: true, keys: ['-'] } },
+                { id: 'btn-fullscreen', action: toggleFullscreen },
+                { id: 'btn-clear-highlights', action: clearHighlights },
+                { id: 'btn-settings', action: () => updateStatus('设置功能开发中...') },
+                { id: 'btn-info', action: () => updateStatus('PDF 阅读与重命名工具 v1.0') },
+            ];
+            
+            // 绑定工具栏按钮事件
+            toolbarActions.forEach(({ id, action }) => {
+                document.getElementById(id).addEventListener('click', action);
+            });
+            
+            // 键盘快捷键映射表
+            const keyboardShortcuts = [
+                { ctrl: true, keys: ['+', '='], action: zoomIn },
+                { ctrl: true, keys: ['-'], action: zoomOut },
+                { ctrl: true, keys: ['0'], action: () => updateZoomAndRender(1.0) },
+            ];
+            
+            // 绑定键盘快捷键
             document.addEventListener('keydown', (e) => {
                 if (e.ctrlKey || e.metaKey) {
-                    switch (e.key) {
-                        case '+':
-                        case '=':
+                    keyboardShortcuts.forEach(({ keys, action }) => {
+                        if (keys.includes(e.key)) {
                             e.preventDefault();
-                            zoomIn();
-                            break;
-                        case '-':
-                            e.preventDefault();
-                            zoomOut();
-                            break;
-                        case '0':
-                            e.preventDefault();
-                            updateZoomAndRender(1.0);
-                            break;
+                            action();
+                        }
+                    });
+                } else {
+                    // 翻页快捷键
+                    if (e.key === 'ArrowLeft' || e.key === 'PageUp') {
+                        e.preventDefault();
+                        previousPage();
+                    } else if (e.key === 'ArrowRight' || e.key === 'PageDown') {
+                        e.preventDefault();
+                        nextPage();
+                    }
+                }
+            });
+            
+            // 滚轮翻页事件
+            elements.pdfContainer.addEventListener('wheel', (e) => {
+                if (!state.pdfDocument || state.isScrolling) return;
+                
+                // 判断是否滚动到底部或顶部
+                const container = elements.pdfContainer.parentElement;
+                const isAtBottom = container.scrollHeight - container.scrollTop <= container.clientHeight + 5;
+                const isAtTop = container.scrollTop <= 5;
+                
+                if (e.deltaY > 0 && isAtBottom) {
+                    // 向下滚动到底部，翻下一页
+                    if (state.currentPage < state.totalPages) {
+                        state.isScrolling = true;
+                        nextPage();
+                        setTimeout(() => { state.isScrolling = false; }, 300);
+                    }
+                } else if (e.deltaY < 0 && isAtTop) {
+                    // 向上滚动到顶部，翻上一页
+                    if (state.currentPage > 1) {
+                        state.isScrolling = true;
+                        previousPage();
+                        setTimeout(() => { state.isScrolling = false; }, 300);
                     }
                 }
             });
