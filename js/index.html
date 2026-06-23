@@ -1432,6 +1432,9 @@ function renderFileList(files, scrollToFileName = null) {
             
             // 滚动到顶部，确保PDF头部在导航栏下方
             mainEl.scrollTop = 0;
+            // 同步覆盖层位置
+            const overlay = document.getElementById('pdf-click-overlay');
+            if (overlay) overlay.style.top = '0px';
             
             // 水平居中：如果PDF宽度小于容器宽度，则水平居中
             // 如果PDF宽度大于容器宽度，则滚动到最左边
@@ -1709,6 +1712,8 @@ function renderFileList(files, scrollToFileName = null) {
                 
                 // 未到达边界 → 手动滚动页面（overlay 阻止了浏览器默认滚动）
                 mainEl.scrollTop += scrollAmount;
+                // 同步覆盖层位置，使其始终覆盖可视区域
+                clickOverlay.style.top = mainEl.scrollTop + 'px';
             });
         }
         
