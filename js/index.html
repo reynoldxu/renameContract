@@ -127,6 +127,35 @@
             pointer-events: none;
         }
         
+        /* PDF点击覆盖层样式 - 基于main视图区域，不受PDF缩放影响 */
+        .pdf-click-overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 20;
+            cursor: pointer;
+            pointer-events: auto;
+            transition: background-color 0.15s ease;
+        }
+        /* 上方10%区域：跳转到第一页（绿色） */
+        /* .pdf-click-overlay.zone-top {
+            background-color: rgba(34, 197, 94, 0.15);
+        } */
+        /* 下方10%区域：跳转到最后一页（红色） */
+        /* .pdf-click-overlay.zone-bottom {
+            background-color: rgba(239, 68, 68, 0.15);
+        } */
+        /* 左侧中间区域：上一页（蓝色） */
+        /* .pdf-click-overlay.zone-left {
+            background-color: rgba(99, 102, 241, 0.1);
+        } */
+        /* 右侧中间区域：下一页（蓝色） */
+        /* .pdf-click-overlay.zone-right {
+            background-color: rgba(99, 102, 241, 0.1);
+        } */
+        
         /* 文件列表项样式 */
         .file-item {
             transition: all 0.2s ease;
@@ -281,7 +310,7 @@
             </aside>
             
             <!-- 中央主界面 - PDF 渲染 -->
-            <main class="flex-1 bg-slate-900 flex items-center justify-center overflow-auto p-4">
+            <main id="pdf-main" class="flex-1 bg-slate-900 flex items-start justify-center overflow-auto p-4 relative">
                 <div id="pdf-container" class="pdf-container relative bg-white shadow-2xl rounded-lg overflow-hidden">
                     <canvas id="pdf-canvas"></canvas>
                     <canvas id="highlight-canvas" class="highlight-overlay"></canvas>
@@ -292,6 +321,9 @@
                         <p class="text-sm mt-2">支持预览、高亮标记和重命名</p>
                     </div>
                 </div>
+                
+                <!-- 点击覆盖层：覆盖整个main视图区域，用于点击翻页和悬停效果 -->
+                <div id="pdf-click-overlay" class="pdf-click-overlay"></div>
             </main>
             
             <!-- 右侧侧边栏 - 重命名面板 -->
@@ -588,8 +620,9 @@
         /**
          * 渲染文件列表
          * @param {Array} files - 文件列表
+         * @param {string} scrollToFileName - 渲染后滚动定位到的文件名（可选）
          */
-function renderFileList(files) {
+function renderFileList(files, scrollToFileName = null) {
     // 保存所有文件列表
     state.allPdfFiles = files;
     
@@ -632,11 +665,42 @@ function renderFileList(files) {
         `;
         
         item.addEventListener('click', () => selectFile(file, item));
+        item.addEventListener('dblclick', () => startRenameFile(file, item));
         list.appendChild(item);
     });
     
     elements.fileListContainer.appendChild(list);
+    
+    // 渲染后滚动定位到指定文件
+    if (scrollToFileName) {
+        const targetItem = elements.fileListContainer.querySelector(`.file-item[data-file-name="${CSS.escape(scrollToFileName)}"]`);
+        if (targetItem) {
+            targetItem.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }
+    } else {
+        // 默认定位到第一个文件
+        const firstItem = elements.fileListContainer.querySelector('.file-item');
+        if (firstItem) {
+            firstItem.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }
+    }
 }
+        
+        /**
+         * 排序并渲染文件列表，支持定位到指定文件
+         * @param {string} scrollToFileName - 渲染后滚动定位到的文件名（可选）
+         */
+        async function sortAndRenderFileList(scrollToFileName = null) {
+            if (!state.directoryHandle) return;
+            
+            await safeAsync(async () => {
+                const files = await getPdfFiles(state.directoryHandle);
+                renderFileList(files, scrollToFileName);
+                
+                // 如果之前有选中文件，尝试重新选中
+                restoreFileSelection();
+            }, '刷新文件列表失败');
+        }
         
         /**
          * 选择文件
@@ -659,17 +723,10 @@ function renderFileList(files) {
         
         /**
          * 刷新文件列表（保持选中状态）
+         * @param {string} scrollToFileName - 渲染后滚动定位到的文件名（可选）
          */
-        async function refreshFileList() {
-            if (!state.directoryHandle) return;
-            
-            await safeAsync(async () => {
-                const files = await getPdfFiles(state.directoryHandle);
-                renderFileList(files);
-                
-                // 如果之前有选中文件，尝试重新选中
-                restoreFileSelection();
-            }, '刷新文件列表失败');
+        async function refreshFileList(scrollToFileName = null) {
+            await sortAndRenderFileList(scrollToFileName);
         }
         
         /**
@@ -685,9 +742,10 @@ function renderFileList(files) {
                 
                 updateStatus('正在扫描文件夹...');
                 
-                // 获取所有 PDF 文件
+                // 获取所有 PDF 文件，排序后渲染并定位到第一个
                 const files = await getPdfFiles(state.directoryHandle);
-                renderFileList(files);
+                const sortedFiles = sortPdfFiles(files);
+                renderFileList(sortedFiles, sortedFiles.length > 0 ? sortedFiles[0].name : null);
                 
                 updateStatus(`找到 ${files.length} 个 PDF 文件`);
                 
@@ -727,7 +785,11 @@ function renderFileList(files) {
                 
                 // 渲染第一页
                 await renderPage(1);
+                await fitToWidth();  // 自适应宽度
                 updatePageInfo();
+                
+                // 重置视图：滚动到顶部并居中
+                resetPdfView();
                 
                 // 隐藏占位符，显示 Canvas
                 elements.pdfPlaceholder.style.display = 'none';
@@ -1044,6 +1106,82 @@ function renderFileList(files) {
         }
         
         /**
+         * 开始重命名文件：将文件名变为可编辑的输入框
+         * @param {Object} file - 文件对象
+         * @param {HTMLElement} fileItem - 文件项DOM元素
+         */
+        function startRenameFile(file, fileItem) {
+            // 防止多次触发
+            if (fileItem.querySelector('.rename-input-container')) return;
+            
+            // 获取当前文件名（不带路径）
+            const currentName = file.name;
+            
+            // 创建输入框容器
+            const container = document.createElement('div');
+            container.className = 'rename-input-container flex items-center space-x-2 mt-1';
+            
+            // 创建输入框
+            const input = document.createElement('input');
+            input.type = 'text';
+            input.value = currentName;
+            input.className = 'flex-1 bg-slate-700 border border-slate-600 rounded px-2 py-1 text-sm text-white focus:outline-none focus:ring-2 focus:ring-indigo-500';
+            input.style.minWidth = '0';
+            
+            // 创建确定按钮
+            const confirmBtn = document.createElement('button');
+            confirmBtn.className = 'bg-indigo-600 hover:bg-indigo-700 text-white px-3 py-1 rounded text-sm';
+            confirmBtn.textContent = '确定';
+            
+            // 创建取消按钮（可选）
+            const cancelBtn = document.createElement('button');
+            cancelBtn.className = 'bg-slate-600 hover:bg-slate-500 text-white px-3 py-1 rounded text-sm';
+            cancelBtn.textContent = '取消';
+            
+            // 将元素添加到容器
+            container.appendChild(input);
+            container.appendChild(confirmBtn);
+            container.appendChild(cancelBtn);
+            
+            // 隐藏原始文件名文本
+            const nameSpan = fileItem.querySelector('span');
+            if (nameSpan) nameSpan.style.display = 'none';
+            
+            // 插入容器到文件项中
+            fileItem.appendChild(container);
+            
+            // 聚焦输入框并全选内容
+            input.focus();
+            input.select();
+            
+            // 确定按钮事件
+            confirmBtn.addEventListener('click', async () => {
+                const newName = input.value.trim();
+                if (newName && newName !== currentName) {
+                    await renameFile(newName);
+                }
+                // 恢复显示
+                container.remove();
+                if (nameSpan) nameSpan.style.display = '';
+            });
+            
+            // 取消按钮事件
+            cancelBtn.addEventListener('click', () => {
+                container.remove();
+                if (nameSpan) nameSpan.style.display = '';
+            });
+            
+            // 输入框回车确认
+            input.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter') {
+                    confirmBtn.click();
+                } else if (e.key === 'Escape') {
+                    cancelBtn.click();
+                }
+            });
+        }
+        
+        /**
          * 重命名文件
          * @param {string} newName - 新文件名（可含或不含扩展名）
          */
@@ -1100,8 +1238,8 @@ function renderFileList(files) {
                 state.currentFileName = fullNewName;
                 updateFileInfo(fullNewName);
                 
-                // 刷新文件列表（保持选中状态）
-                await refreshFileList();
+                // 刷新文件列表（重排序后定位到重命名的文件）
+                await refreshFileList(fullNewName);
                 
                 updateStatus(`重命名成功: ${fullNewName}`);
             }, '重命名失败');
@@ -1227,6 +1365,7 @@ function renderFileList(files) {
         const SCALE_MIN = 0.5;
         const SCALE_MAX = 3.0;
         const SCALE_STEP = 0.25;
+        const SCROLL_SCALE_STEP = 0.1; // 滚轮缩放步长
         
         /**
          * 统一更新缩放比例并重绘 PDF
@@ -1253,6 +1392,65 @@ function renderFileList(files) {
          */
         function zoomOut() {
             updateZoomAndRender(state.scale - SCALE_STEP);
+        }
+        
+        /**
+         * 自适应宽度：根据中央区域可用宽度自动调整缩放比例
+         */
+        async function fitToWidth() {
+            if (!state.pdfDocument) return;
+            
+            try {
+                // 获取当前 PDF 页面的原始尺寸（scale=1 时的宽度）
+                const page = await state.pdfDocument.getPage(state.currentPage);
+                const originalViewport = page.getViewport({ scale: 1.0 });
+                const originalWidth = originalViewport.width;
+                
+                // 获取中央区域（main元素）的可用宽度
+                // main 元素有 p-4 padding（左右各 16px）
+                const mainEl = document.querySelector('main');
+                const mainRect = mainEl.getBoundingClientRect();
+                const availableWidth = mainRect.width - 32; // 减去左右 padding (16*2)
+                
+                // 计算缩放比例 = 可用宽度 / 原始宽度
+                const newScale = availableWidth / originalWidth;
+                
+                // 应用缩放（不更新状态栏信息，保持静默）
+                state.scale = Math.max(SCALE_MIN, Math.min(SCALE_MAX, newScale));
+                await renderPage(state.currentPage);
+            } catch (error) {
+                console.error('自适应宽度失败:', error);
+            }
+        }
+        
+        /**
+         * 重置PDF视图：滚动到顶部并水平居中
+         */
+        function resetPdfView() {
+            const mainEl = document.querySelector('main');
+            if (!mainEl) return;
+            
+            // 滚动到顶部，确保PDF头部在导航栏下方
+            mainEl.scrollTop = 0;
+            
+            // 水平居中：如果PDF宽度小于容器宽度，则水平居中
+            // 如果PDF宽度大于容器宽度，则滚动到最左边
+            const pdfContainer = document.getElementById('pdf-container');
+            if (pdfContainer) {
+                const containerWidth = mainEl.clientWidth;
+                const pdfWidth = pdfContainer.scrollWidth;
+                
+                if (pdfWidth < containerWidth) {
+                    // PDF宽度小于容器宽度，水平居中
+                    const scrollLeft = (pdfWidth - containerWidth) / 2;
+                    mainEl.scrollLeft = Math.max(0, scrollLeft);
+                } else {
+                    // PDF宽度大于容器宽度，滚动到最左边
+                    mainEl.scrollLeft = 0;
+                }
+            } else {
+                mainEl.scrollLeft = 0;
+            }
         }
         
         /**
@@ -1299,6 +1497,7 @@ function renderFileList(files) {
             state.currentPage = targetPage;
             await renderPage(state.currentPage);
             updatePageInfo();
+            resetPdfView();  // 翻页后滚动到顶部并居中
         }
         
         /**
@@ -1350,6 +1549,67 @@ function renderFileList(files) {
             // 翻页按钮事件
             document.getElementById('btn-prev-page').addEventListener('click', previousPage);
             document.getElementById('btn-next-page').addEventListener('click', nextPage);
+            
+            // PDF点击覆盖层：基于main视图区域，不受PDF缩放影响
+            const clickOverlay = document.getElementById('pdf-click-overlay');
+            
+            /**
+             * 根据鼠标在main区域内的位置，判断所在区域
+             * @param {MouseEvent} e - 鼠标事件
+             * @returns {string} 区域标识: 'top' | 'bottom' | 'left' | 'right'
+             */
+            function getClickZone(e) {
+                const rect = clickOverlay.getBoundingClientRect();
+                const x = e.clientX - rect.left;
+                const y = e.clientY - rect.top;
+                const width = rect.width;
+                const height = rect.height;
+                
+                // 上方10%
+                if (y < height * 0.1) return 'top';
+                // 下方10%
+                if (y > height * 0.9) return 'bottom';
+                // 左半部分（中间80%）
+                if (x < width * 0.5) return 'left';
+                // 右半部分（中间80%）
+                return 'right';
+            }
+            
+            // 区域提示文本映射
+            const zoneHints = {
+                top: '点击跳转到第一页',
+                bottom: '点击跳转到最后一页',
+                left: '点击上一页',
+                right: '点击下一页'
+            };
+            
+            // 鼠标移动：在状态栏显示当前区域提示
+            clickOverlay.addEventListener('mousemove', (e) => {
+                updateStatus(zoneHints[getClickZone(e)]);
+            });
+            
+            // 鼠标离开：恢复状态栏为就绪
+            clickOverlay.addEventListener('mouseleave', () => {
+                updateStatus('就绪');
+            });
+            
+            // 点击事件：根据区域执行翻页操作
+            clickOverlay.addEventListener('click', (e) => {
+                switch (getClickZone(e)) {
+                    case 'top':
+                        goToPage(1);        // 跳转到第一页
+                        break;
+                    case 'bottom':
+                        goToPage(state.totalPages); // 跳转到最后一页
+                        break;
+                    case 'left':
+                        previousPage();     // 上一页
+                        break;
+                    case 'right':
+                        nextPage();         // 下一页
+                        break;
+                }
+            });
             
             // 页码输入框事件
             const pageInput = document.getElementById('page-input');
@@ -1413,30 +1673,42 @@ function renderFileList(files) {
                 }
             });
             
-            // 滚轮翻页事件
-            elements.pdfContainer.addEventListener('wheel', (e) => {
+            // 滚动翻页检测：overlay 拦截了所有鼠标事件，需要在 overlay 上手动处理滚动和翻页
+            const mainEl = document.querySelector('main');
+            
+            clickOverlay.addEventListener('wheel', (e) => {
                 if (!state.pdfDocument || state.isScrolling) return;
                 
-                // 判断是否滚动到底部或顶部
-                const container = elements.pdfContainer.parentElement;
-                const isAtBottom = container.scrollHeight - container.scrollTop <= container.clientHeight + 5;
-                const isAtTop = container.scrollTop <= 5;
+                // 归一化滚动量（不同浏览器 deltaMode 不同）
+                let scrollAmount = e.deltaY;
+                if (e.deltaMode === 1) scrollAmount = e.deltaY * 16;   // 行模式
+                if (e.deltaMode === 2) scrollAmount = e.deltaY * mainEl.clientHeight; // 页模式
                 
-                if (e.deltaY > 0 && isAtBottom) {
-                    // 向下滚动到底部，翻下一页
-                    if (state.currentPage < state.totalPages) {
-                        state.isScrolling = true;
-                        nextPage();
-                        setTimeout(() => { state.isScrolling = false; }, 300);
-                    }
-                } else if (e.deltaY < 0 && isAtTop) {
-                    // 向上滚动到顶部，翻上一页
-                    if (state.currentPage > 1) {
-                        state.isScrolling = true;
-                        previousPage();
-                        setTimeout(() => { state.isScrolling = false; }, 300);
-                    }
-                }
+                const direction = scrollAmount > 0 ? 'down' : 'up';
+                
+                // 检查当前滚动位置（滚动前）
+                const hasOverflow = mainEl.scrollHeight > mainEl.clientHeight + 5;
+                const isAtBottom = hasOverflow && (mainEl.scrollHeight - mainEl.scrollTop <= mainEl.clientHeight + 5);
+                const isAtTop = mainEl.scrollTop <= 5;
+                
+                // 已经在底部 + 继续向下滚 → 翻下一页
+                //if (isAtBottom && direction === 'down' && state.currentPage < state.totalPages) {
+                //    state.isScrolling = true;
+                //    nextPage();
+                //    setTimeout(() => { state.isScrolling = false; }, 300);
+                //    return;
+                //}
+                //
+                //// 已经在顶部 + 继续向上滚 → 翻上一页
+                //if (isAtTop && direction === 'up' && state.currentPage > 1) {
+                //    state.isScrolling = true;
+                //    previousPage();
+                //    setTimeout(() => { state.isScrolling = false; }, 300);
+                //    return;
+                //}
+                
+                // 未到达边界 → 手动滚动页面（overlay 阻止了浏览器默认滚动）
+                mainEl.scrollTop += scrollAmount;
             });
         }
         
