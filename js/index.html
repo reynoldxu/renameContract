@@ -258,6 +258,15 @@
                         <i class="fas fa-folder-open mr-2"></i>Browse
                     </button>
                 </div>
+                <!-- 文件搜索框 -->
+                <div class="px-4 py-2 border-b border-slate-700">
+                    <div class="relative">
+                        <input type="text" id="file-search-input" 
+                            class="w-full bg-slate-700 border border-slate-600 rounded-lg pl-9 pr-3 py-2 text-sm text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+                            placeholder="搜索 PDF 文件...">
+                        <i class="fas fa-search absolute left-3 top-1/2 transform -translate-y-1/2 text-slate-400 text-sm"></i>
+                    </div>
+                </div>
                 <div class="flex-1 overflow-y-auto p-2" id="file-list-container">
                     <div class="text-slate-400 text-sm text-center py-8">
                         <i class="fas fa-file-pdf text-4xl mb-2 opacity-50"></i>
@@ -358,6 +367,8 @@
             currentPage: 1,                  // 当前页码
             totalPages: 0,                   // 总页数
             isScrolling: false,              // 防抖：滚轮滚动中标志
+            fileSearchKeyword: '',           // 文件搜索关键词
+            allPdfFiles: [],                 // 存储所有 PDF 文件列表
         };
         
         // DOM 元素引用
@@ -513,59 +524,119 @@
          * @param {string} path - 当前路径
          * @returns {Promise<Array>} PDF 文件列表
          */
-        async function getPdfFiles(dirHandle, path = '') {
-            const files = [];
-            for await (const [name, handle] of dirHandle.entries()) {
-                if (handle.kind === 'file' && name.toLowerCase().endsWith('.pdf')) {
-                    files.push({
-                        name: name,
-                        path: path + name,
-                        handle: handle
-                    });
-                } else if (handle.kind === 'directory') {
-                    const subFiles = await getPdfFiles(handle, path + name + '/');
-                    files.push(...subFiles);
-                }
-            }
-            return files;
+        //async function getPdfFiles(dirHandle, path = '') {
+        //    const files = [];
+        //    for await (const [name, handle] of dirHandle.entries()) {
+        //        if (handle.kind === 'file' && name.toLowerCase().endsWith('.pdf')) {
+        //            files.push({
+        //                name: name,
+        //                path: path + name,
+        //                handle: handle
+        //            });
+        //        } else if (handle.kind === 'directory') {
+        //            const subFiles = await getPdfFiles(handle, path + name + '/');
+        //            files.push(...subFiles);
+        //        }
+        //    }
+        //    return files;
+        //}
+		
+		/**
+		 * 读取当前目录下的 PDF 文件（不递归子文件夹）
+		 * @param {FileSystemDirectoryHandle} dirHandle - 目录句柄
+		 * @returns {Promise<Array>} PDF 文件列表
+		 */
+		async function getPdfFiles(dirHandle) {
+			const files = [];
+			// 只遍历当前层级的条目
+			for await (const [name, handle] of dirHandle.entries()) {
+				// 仅收集文件，且后缀为 .pdf 的项
+				if (handle.kind === 'file' && name.toLowerCase().endsWith('.pdf')) {
+					files.push({
+						name: name,
+						path: name, // 路径简化为文件名
+						handle: handle
+					});
+				}
+				// 注：这里移除了对 handle.kind === 'directory' 的处理，从而实现禁止递归
+			}
+			return files;
+		}
+        
+        /**
+         * 高亮匹配文本
+         * @param {string} text - 原始文本
+         * @param {string} keyword - 搜索关键词
+         * @returns {string} 高亮后的 HTML
+         */
+        function highlightMatch(text, keyword) {
+            if (!keyword) return text;
+            const regex = new RegExp(`(${escapeRegex(keyword)})`, 'gi');
+            return text.replace(regex, '<mark class="bg-yellow-300 text-black px-0.5 rounded">$1</mark>');
+        }
+        
+        /**
+         * 对PDF文件列表进行排序
+         * @param {Array} files - 文件列表
+         * @returns {Array} 排序后的文件列表
+         */
+        function sortPdfFiles(files) {
+            // 默认按文件名升序排序（支持中文本地化排序）
+            return [...files].sort((a, b) => a.name.localeCompare(b.name, 'zh-CN'));
         }
         
         /**
          * 渲染文件列表
+         * @param {Array} files - 文件列表
          */
-        function renderFileList(files) {
-            elements.fileListContainer.innerHTML = '';
-            
-            if (files.length === 0) {
-                elements.fileListContainer.innerHTML = `
-                    <div class="text-slate-400 text-sm text-center py-8">
-                        <i class="fas fa-folder-open text-4xl mb-2 opacity-50"></i>
-                        <p>未找到 PDF 文件</p>
-                    </div>
-                `;
-                return;
-            }
-            
-            const list = document.createElement('div');
-            list.className = 'space-y-1';
-            
-            files.forEach((file, index) => {
-                const item = document.createElement('div');
-                item.className = 'file-item p-2 rounded cursor-pointer flex items-center space-x-2';
-                item.dataset.index = index;
-                item.dataset.fileName = file.name;
-                
-                item.innerHTML = `
-                    <i class="fas fa-file-pdf text-red-400"></i>
-                    <span class="text-sm truncate">${file.name}</span>
-                `;
-                
-                item.addEventListener('click', () => selectFile(file, item));
-                list.appendChild(item);
-            });
-            
-            elements.fileListContainer.appendChild(list);
-        }
+function renderFileList(files) {
+    // 保存所有文件列表
+    state.allPdfFiles = files;
+    
+    // 对文件列表进行排序
+    const sortedFiles = sortPdfFiles(files);
+    
+    // 根据搜索关键词过滤文件（使用排序后的列表）
+    const keyword = state.fileSearchKeyword.toLowerCase().trim();
+    const filteredFiles = keyword 
+        ? sortedFiles.filter(file => file.name.toLowerCase().includes(keyword))
+        : sortedFiles;
+    
+    elements.fileListContainer.innerHTML = '';
+    
+    if (filteredFiles.length === 0) {
+        elements.fileListContainer.innerHTML = `
+            <div class="text-slate-400 text-sm text-center py-8">
+                <i class="fas fa-search text-4xl mb-2 opacity-50"></i>
+                <p>${files.length === 0 ? '未找到 PDF 文件' : '没有匹配的文件'}</p>
+            </div>
+        `;
+        return;
+    }
+    
+    const list = document.createElement('div');
+    list.className = 'space-y-1';
+    
+    filteredFiles.forEach((file, index) => {
+        const item = document.createElement('div');
+        item.className = 'file-item p-2 rounded cursor-pointer flex items-center space-x-2';
+        item.dataset.index = index;
+        item.dataset.fileName = file.name;
+        
+        // 高亮文件名匹配部分
+        const displayName = highlightMatch(file.name, state.fileSearchKeyword);
+        
+        item.innerHTML = `
+            <i class="fas fa-file-pdf text-red-400"></i>
+            <span class="text-sm truncate">${displayName}</span>
+        `;
+        
+        item.addEventListener('click', () => selectFile(file, item));
+        list.appendChild(item);
+    });
+    
+    elements.fileListContainer.appendChild(list);
+}
         
         /**
          * 选择文件
@@ -608,7 +679,8 @@
             try {
                 // 请求目录选择权限
                 state.directoryHandle = await window.showDirectoryPicker({
-                    mode: 'readwrite'  // 需要读写权限以支持重命名
+                    mode: 'readwrite',  // 需要读写权限以支持重命名
+                    id: 'pdf-folder-picker'  // 使用固定ID让浏览器记住上次选择的目录
                 });
                 
                 updateStatus('正在扫描文件夹...');
@@ -915,7 +987,7 @@
                         title: '双击重命名为: ' + line
                     },
                     listeners: {
-                        dblclick: () => renameFile(line)
+                        dblclick: () => renameFile(line)  // 传入原始行，renameFile内部会过滤
                     }
                 });
                 btn.textContent = line;
@@ -981,8 +1053,44 @@
                 return;
             }
             
+            // 文件名过滤函数：去除末尾的 "%...%" 备注部分
+            function filterFileName(name) {
+                // 匹配末尾的 "%任意内容%" 格式，中间内容不重要
+                const regex = /%[^%]+%$/;
+                return name.replace(regex, '').trim();
+            }
+            
+            // 过滤文件名，去除末尾的金额信息
+            const filteredName = filterFileName(newName);
+            
+            // 如果过滤后文件名为空，使用原始名称
+            const finalName = filteredName || newName;
+            
+            const fullNewName = ensureExtension(finalName);
+            
+            // 如果新旧文件名相同，无需重命名
+            if (fullNewName === state.currentFileName) {
+                updateStatus('新旧文件名相同，无需重命名');
+                return;
+            }
+            
+            // 检查目标文件是否已存在
+            if (state.directoryHandle) {
+                try {
+                    await state.directoryHandle.getFileHandle(fullNewName);
+                    // 文件已存在，直接取消重命名
+                    updateStatus(`重命名失败: "${fullNewName}" 已存在`, true);
+                    alert(`目标文件 "${fullNewName}" 已存在，无法重命名！`);
+                    return;
+                } catch (error) {
+                    // getFileHandle 抛出 NotFoundError 说明文件不存在，可以继续重命名
+                    if (error.name !== 'NotFoundError') {
+                        console.error('检查文件是否存在时出错:', error);
+                    }
+                }
+            }
+            
             await safeAsync(async () => {
-                const fullNewName = ensureExtension(newName);
                 updateStatus(`正在重命名: ${state.currentFileName} → ${fullNewName}`);
                 
                 // 调用 File System Access API 的 move 方法进行物理重命名
@@ -1230,6 +1338,14 @@
             // 侧边栏折叠
             elements.toggleLeft.addEventListener('click', toggleLeftSidebar);
             elements.toggleRight.addEventListener('click', toggleRightSidebar);
+            
+            // 文件搜索框事件
+            const fileSearchInput = document.getElementById('file-search-input');
+            fileSearchInput.addEventListener('input', (e) => {
+                state.fileSearchKeyword = e.target.value;
+                renderFileList(state.allPdfFiles);
+                restoreFileSelection();
+            });
             
             // 翻页按钮事件
             document.getElementById('btn-prev-page').addEventListener('click', previousPage);
