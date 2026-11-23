@@ -4,12 +4,10 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>PDF 阅读与重命名工具</title>
-    <!-- 引入 Tailwind CSS v4 -->
-    <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
-    <!-- 引入 PDF.js -->
-    <script src="https://cdn.jsdelivr.net/npm/pdfjs-dist@latest/build/pdf.min.js"></script>
-    <!-- 引入 Font Awesome -->
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+    <!-- 本地依赖（固定版本，离线可用） -->
+    <script src="vendor/tailwind/index.global.js"></script>
+    <script src="vendor/pdfjs/pdf.min.js"></script>
+    <link rel="stylesheet" href="vendor/fontawesome/css/all.min.css">
     
     <style>
         /* 自定义滚动条样式 */
@@ -380,9 +378,22 @@
     </div>
     
     <script>
+        // ==================== 依赖自检 ====================
+        // 库未加载时给出明确提示并中止，避免后续脚本静默崩溃
+        if (typeof pdfjsLib === 'undefined') {
+            document.addEventListener('DOMContentLoaded', function () {
+                var el = document.getElementById('status-info');
+                if (el) {
+                    el.textContent = '组件加载失败，请刷新重试';
+                    el.style.color = '#f87171';
+                }
+            });
+            throw new Error('依赖加载失败：pdfjsLib 未定义，请检查 vendor/pdfjs/pdf.min.js');
+        }
+
         // ==================== 初始化与全局变量 ====================
-        // PDF.js Worker 配置
-        pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@latest/build/pdf.worker.min.js';
+        // PDF.js Worker 配置（本地固定版本）
+        pdfjsLib.GlobalWorkerOptions.workerSrc = 'vendor/pdfjs/pdf.worker.min.js';
         
         // 全局状态
         const state = {
@@ -496,7 +507,30 @@
                 item.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
             }
         }
-        
+
+        /**
+         * 从文件名中提取姓名和项目名称，复制到剪贴板
+         * 文件名格式：年份-姓名-项目名称.pdf
+         * 输出格式：姓名<TAB>项目名称
+         * @param {string} fileName - 文件名（含扩展名）
+         */
+        async function copyFileInfoToClipboard(fileName) {
+            const nameWithoutExt = fileName.replace(/\.pdf$/i, '');
+            const match = nameWithoutExt.match(/^(\d{4})-([^-]+)-(.+)$/);
+            if (!match) {
+                updateStatus(`无法解析文件名: ${fileName}`, true);
+                return;
+            }
+            const [, , name, project] = match;
+            const text = `${name}\t${project}`;
+            try {
+                await navigator.clipboard.writeText(text);
+                updateStatus(`已复制: ${name}\t${project}`);
+            } catch (e) {
+                updateStatus('复制到剪贴板失败', true);
+            }
+        }
+
         /**
          * 通用DOM元素创建辅助函数
          * @param {string} tag - 标签名
@@ -666,6 +700,10 @@ function renderFileList(files, scrollToFileName = null) {
         
         item.addEventListener('click', () => selectFile(file, item));
         item.addEventListener('dblclick', () => startRenameFile(file, item));
+        item.addEventListener('contextmenu', (e) => {
+            e.preventDefault();
+            copyFileInfoToClipboard(file.name);
+        });
         list.appendChild(item);
     });
     
@@ -716,6 +754,14 @@ function renderFileList(files, scrollToFileName = null) {
             state.fileHandle = file.handle;
             state.currentFileName = file.name;
             updateFileInfo(file.name);
+            
+            // 复制文件名（不含 .pdf 后缀）到剪贴板
+            const nameWithoutExt = file.name.replace(/\.pdf$/i, '');
+            try {
+                await navigator.clipboard.writeText(nameWithoutExt);
+            } catch (e) {
+                // 静默失败，不影响正常操作
+            }
             
             // 加载 PDF
             await loadPdf(file.handle);
